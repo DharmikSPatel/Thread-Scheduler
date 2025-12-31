@@ -1,17 +1,19 @@
 // File:	thread-worker.c
 
-// List all group member's name:
-/*
- */
-// username of iLab:
-// iLab Server:
+//
+/* 
+Dharmik Patel
+Dhruv Chaudhry
+ */ 
+// username of iLab: dsp187
+// iLab Server: ice.cs.rutgers.edu
 
 #include "queue.h"
 #include "thread-worker.h"
 #include "thread_worker_types.h"
 
-//CHANGE: back to SIGSTKSZ 
-#define STACK_SIZE sysconf (_SC_SIGSTKSZ)
+// #define STACK_SIZE sysconf (_SC_SIGSTKSZ)
+#define STACK_SIZE SIGSTKSZ //default stack size
 #define QUANTUM 10 * 1000 //10 milliseconds (time that it runs)
 #define MY_DEBUG 0
 //misc data structs
@@ -37,33 +39,19 @@ static void sched_mlfq();
 static void schedule()
 {
     if (MY_DEBUG) printf("IN SCEDUALE FUNC-----\n");
-// - every time a timer interrupt occurs, your worker thread library
-// should be contexted switched from a thread context to this
-// schedule() function
-
-// - invoke scheduling algorithms according to the policy (RR or MLFQ)
-
-// - schedule policy
 #ifndef MLFQ
     // Choose RR
     sched_rr();
 #else
     // Choose MLFQ
-    
 #endif
 }
 
-static void sched_rr()
-{
+static void sched_rr(){
     pause_timer();
     int status = running->thread_status;
     if (status == READY){
         if (MY_DEBUG) printf("Ready in Secd b4 (%d)\n", running->thread_id);
-        // tcb* old_running = running;
-        // if((running = dequeue(ready_q)) == NULL){
-        //     error("can not dequeue");
-        // }
-        // enqueue(ready_q, old_running);
         enqueue(ready_q, running);
         if((running = dequeue(ready_q)) == NULL){
             error("can not dequeue");
@@ -87,8 +75,6 @@ static void sched_rr()
             free(data->thread_context.uc_stack.ss_sp);
             free(data);
         }
-
-
         if((running = dequeue(ready_q)) == NULL){
             error("can not dequeue");
         }
@@ -101,7 +87,6 @@ static void sched_rr()
     running->thread_status = RUNNING;
 
     if (MY_DEBUG) printf("made it rhouhg\n");
-    //makecontext(&sch_ctx, (void*)&schedule, 0);
     if (MY_DEBUG) printf("about to switch out of scd_ctx TO id(%d)\n", running->thread_id);
     start_timer();
     if(setcontext(&(running->thread_context)) < 0){
@@ -160,9 +145,8 @@ void set_up_timer(){
 	memset (&sa, 0, sizeof (sa));
 	sa.sa_handler = &premptThread;
 	sigaction (SIGPROF, &sa, NULL);
-    timer.it_interval.tv_usec = QUANTUM; 
+    timer.it_interval.tv_usec = 0; 
 	timer.it_interval.tv_sec = 0;
-    start_timer();
 }
 
 void set_up_scheduler_context(){
@@ -185,6 +169,7 @@ void set_up_run_main_tcb(){
         error("");
     }
     make_set_stack(&(running->thread_context));
+    enqueue(all_nodes_q, running); 
     // if(setcontext(&(running->thread_context)) < 0){
     //     error("");
     // }
@@ -197,13 +182,12 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 {
     if (MY_DEBUG) printf("Worker Create started\n");
     if(init_scheduler_done == 0){
-        //allocate mem for ready_q
         ready_q = init_queue();
         all_nodes_q = init_queue();
-        // Create main context
         set_up_run_main_tcb();
-        // Create scheduler context and timer
         set_up_scheduler_context();
+        set_up_timer();
+        init_scheduler_done = 1;
     }
     //create a tcb here 
     tcb *new_thread = (tcb *)malloc(sizeof(tcb));
@@ -218,10 +202,11 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
     enqueue(all_nodes_q, new_thread); //just need to do once
     *thread = new_thread->thread_id;
     if (MY_DEBUG) printf("Done Creatig new thread id(%d)\n", new_thread->thread_id);
-    if(init_scheduler_done == 0){
-        // start timer after the first tcb has been created and pushed
-        set_up_timer();
-        init_scheduler_done = 1;
+
+    //call schedular. rn the running thread is the main thread
+    running->thread_status = READY;
+    if(swapcontext(&(running->thread_context), &sch_ctx) < 0) {
+        error("swap to sch_ctx failed");
     }
     return 0;
 }
@@ -307,7 +292,13 @@ int worker_mutex_init(worker_mutex_t *mutex,
     //- initialize data structures for this mutex
     if (MY_DEBUG) printf("MUTEX INIT %p\n", mutex);
     // mutex = (worker_mutex_t*) malloc(sizeof(worker_mutex_t));
-    atomic_flag_clear(&(mutex->__lock));
+    mutex->__malloced = 0;
+    if(mutex == NULL){
+        mutex = (worker_mutex_t*) malloc(sizeof(worker_mutex_t));
+        mutex->__malloced = 1;
+    }
+        
+    mutex->__lock = UNLOCKED;
     mutex->blocked_threads = init_queue();
     if (MY_DEBUG) printf("MUTEX INIT %p\n", mutex);
     if (MY_DEBUG) printf("QUEUE INIT %p\n", mutex->blocked_threads);
@@ -320,7 +311,9 @@ int worker_mutex_init(worker_mutex_t *mutex,
 /* aquire the mutex lock */
 int worker_mutex_lock(worker_mutex_t *mutex)
 {
-    while(atomic_flag_test_and_set(&(mutex->__lock))){
+    if (MY_DEBUG) printf("Trying to lock mutex: %p (%d)\n", mutex, mutex->__lock);
+
+    while(__sync_lock_test_and_set(&(mutex->__lock), LOCKED) == LOCKED){
         //mutex is currently locked
         running->thread_status = BLOCKED;
         enqueue(mutex->blocked_threads, running);
@@ -341,7 +334,7 @@ int worker_mutex_lock(worker_mutex_t *mutex)
 /* release the mutex lock */
 int worker_mutex_unlock(worker_mutex_t *mutex)
 {
-    atomic_flag_clear(&(mutex->__lock));
+    
     tcb* next = dequeue(mutex->blocked_threads);
     if(next != NULL){
         if (MY_DEBUG) printf("LOCK REASLED, ADDING new guy\n");
@@ -351,7 +344,7 @@ int worker_mutex_unlock(worker_mutex_t *mutex)
     else{
         if (MY_DEBUG) printf("LOCK REASLED, NO ONE else wating\n");
     }
-
+    __sync_lock_release(&(mutex->__lock));
     // - release mutex and make it available again.
     // - put one or more threads in block list to run queue
     // so that they could compete for mutex later.
@@ -364,17 +357,22 @@ int worker_mutex_destroy(worker_mutex_t *mutex)
 {
     // make sure no threads are wating on mutex
     // - de-allocate dynamic memory created in worker_mutex_init
+    // int *p;
+    // __sync_lock_test_and_set(p, 1);
+    if(mutex->__lock == LOCKED){
+        if (MY_DEBUG) printf("LOCK IN USE CANT DESI\n");
+        return -1;  
+    }
     if(mutex->blocked_threads->head != NULL){
         if (MY_DEBUG) printf("PPL WAITING CANT DESI\n");
         return -1;
     }
     else {
+        if (MY_DEBUG) printf("Destryoed\n");
+
         free(mutex->blocked_threads);
+        if(mutex->__malloced)
+            free(mutex);
         return 0;
     }
 };
-
-
-// Feel free to add any other functions you need.
-// You can also create separate files for helper functions, structures, etc.
-// But make sure that the Makefile is updated to account for the same.
