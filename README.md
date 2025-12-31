@@ -1,4 +1,4 @@
-# Thread Scheduler Project Plan
+# Thread Scheduler
 
 ## Table of Contents
 1. [Project Overview](#project-overview)
